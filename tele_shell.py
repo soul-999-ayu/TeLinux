@@ -2,22 +2,26 @@ import os
 import re
 import subprocess
 import psutil
-from telegram import Update
+from telegram import Update, WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- CONFIGURATION ---
-TOKEN = "YOUR_BOT_TOKEN_HERE"  # <--- PASTE YOUR TOKEN HERE
-AUTHORIZED_USER_ID = 123456789  # <--- PASTE YOUR ID HERE
+TOKEN = "YOUR_BOT_TOKEN_HERE"      # <--- PASTE YOUR BOT TOKEN HERE
+AUTHORIZED_USER_ID = 123456789     # <--- PASTE YOUR NUMERIC ID HERE
 HOME_DIR = os.path.expanduser("~")
 
-# --- LISTS ---
-# 1. BLOCKED: These freeze the bot because they never exit (Interactive CLI)
-BLOCKED_COMMANDS = [
+# Your Cloudflare Tunnel URL
+WEB_TERMINAL_URL = "https://your-generated-url.trycloudflare.com"
+
+# --- COMMAND LISTS ---
+
+# 1. INTERACTIVE: These require the Web App (would freeze normal chat)
+INTERACTIVE_COMMANDS = [
     "cmatrix", "vim", "nano", "htop", "top", "less", "more", "man", 
-    "watch", "tmux", "screen"
+    "watch", "tmux", "screen", "adb", "ssh", "python", "node", "btop"
 ]
 
-# 2. GUI APPS: These will be launched in the background (Non-blocking)
+# 2. GUI APPS: These launch on the PC screen (Fire-and-Forget)
 GUI_COMMANDS = [
     "firefox", "google-chrome", "chromium", "brave-browser", 
     "gedit", "nautilus", "vlc", "mpv", "code"
@@ -32,43 +36,33 @@ async def check_user(update: Update):
     if update.effective_user.id != AUTHORIZED_USER_ID: return False
     return True
 
-# --- COMMANDS ---
+# --- CORE HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user(update): return
     context.user_data['cwd'] = HOME_DIR
+    
+    # Send a menu with the Terminal button immediately
+    keyboard = [[InlineKeyboardButton("💻 Open Full Terminal", web_app=WebAppInfo(url=WEB_TERMINAL_URL))]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
-        "⚡ **TeLinux Online**\n\n"
-        "✅ **System Ready**\n"
-        "🔹 **Blocklist Active:** `cmatrix` and interactive tools blocked.\n"
-        "🔹 **GUI Mode:** Firefox/Chrome launch instantly on PC.\n\n"
-        "Type `/help` for commands."
+        "⚡ **TeLinux v2 (Hybrid)**\n\n"
+        "✅ **Chat Mode:** Active (Type `ls`, `whoami`)\n"
+        "✅ **Web Mode:** Active (Full Interactive Shell)\n"
+        "🛡️ **Status:** System Secure.",
+        reply_markup=reply_markup
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user(update): return
     help_text = (
-        "📚 **TeLinux Command List**\n\n"
-        "⌨️ **Shell:** Type any command (`ls`, `whoami`, `dnf update`)\n"
-        "🖥️ **GUI:** Type `firefox` or `chrome` to open on PC\n"
-        "📂 **Files:** `/pull filename` (Download) or Send File (Upload)\n"
-        "📊 **Stats:** `/health` (CPU/RAM Usage)\n"
-        "🛑 **Safety:** `cmatrix`, `vim`, etc. are blocked."
+        "📚 **TeLinux v2 Usage**\n\n"
+        "1️⃣ **Chat Mode:** Run standard commands like `ls`, `dnf update` directly here.\n"
+        "2️⃣ **Web Mode:** Commands like `cmatrix` or `top` will offer a popup terminal.\n"
+        "3️⃣ **GUI Mode:** Type `firefox` to open apps on your PC screen.\n"
+        "4️⃣ **File Ops:** `/pull filename` to download, or send a file to upload."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
-
-async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_user(update): return
-    cpu = psutil.cpu_percent()
-    ram = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    
-    health_msg = (
-        "📊 **System Health**\n"
-        f"🖥️ **CPU:** {cpu}%\n"
-        f"📟 **RAM:** {ram.percent}% ({ram.used // (1024**2)}MB / {ram.total // (1024**2)}MB)\n"
-        f"💽 **Disk:** {disk.percent}% used"
-    )
-    await update.message.reply_text(health_msg)
 
 async def handle_shell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user(update): return
@@ -76,68 +70,73 @@ async def handle_shell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_text = update.message.text.strip()
     if not raw_text: return
     
-    # 1. SMART PARSING
     parts = raw_text.split(maxsplit=1)
     command = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
     cmd_full = f"{command} {args}".strip()
     cwd = context.user_data.get('cwd', HOME_DIR)
 
-    # 2. BLOCKLIST CHECK
-    if command in BLOCKED_COMMANDS:
-        await update.message.reply_text(f"🛑 **Blocked:** `{command}` is interactive and will freeze the bot.")
+    # --- MODE 1: INTERACTIVE (Web App Trigger) ---
+    if command in INTERACTIVE_COMMANDS or command.startswith("adb shell"):
+        keyboard = [[InlineKeyboardButton(f"🚀 Launch {command}", web_app=WebAppInfo(url=WEB_TERMINAL_URL))]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"⚠️ **Interactive Command Detected**\n"
+            f"`{command}` requires a live terminal session.",
+            reply_markup=reply_markup
+        )
         return
 
-    # 3. GUI LAUNCHER (Fire-and-Forget)
+    # --- MODE 2: GUI LAUNCHER (PC Screen) ---
     if command in GUI_COMMANDS:
         try:
-            # We use Popen so Python DOES NOT WAIT for the app to close
             env = os.environ.copy()
-            env["DISPLAY"] = ":0" # Force open on Laptop Screen
+            env["DISPLAY"] = ":0"
             subprocess.Popen(cmd_full, shell=True, cwd=cwd, env=env, start_new_session=True)
-            await update.message.reply_text(f"🚀 **Launched:** `{command}` on PC display.")
+            await update.message.reply_text(f"🖥️ **Launched:** `{command}` on PC display.")
         except Exception as e:
-            await update.message.reply_text(f"⚠️ **Launch Error:** `{str(e)}`")
+            await update.message.reply_text(f"⚠️ **Error:** `{str(e)}`")
         return
 
-    # 4. STANDARD SHELL EXECUTION (Blocking)
-    # CD Command
+    # --- MODE 3: STANDARD SHELL (Chat Response) ---
     if command == "cd":
         target = args if args else HOME_DIR
         new_path = os.path.normpath(os.path.join(cwd, target))
         if os.path.isdir(new_path):
             context.user_data['cwd'] = new_path
-            await update.message.reply_text(f"📁 **Directory:** `{new_path}`")
+            await update.message.reply_text(f"📂 **Changed:** `{new_path}`")
         else:
-            await update.message.reply_text(f"❌ Not found: `{args}`")
+            await update.message.reply_text(f"❌ Path not found: `{args}`")
         return
 
-    # Auto-Sudo
-    privileged = ['dnf', 'reboot', 'shutdown', 'systemctl']
+    privileged = ['dnf', 'apt', 'reboot', 'shutdown', 'systemctl', 'pacman']
     if any(p == command for p in privileged) and not cmd_full.startswith('sudo'):
         cmd_full = f"sudo {cmd_full}"
 
     try:
         env = os.environ.copy()
-        env["PATH"] = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+        env["PATH"] = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" + os.pathsep + env.get("PATH", "")
         
-        # Run command with 30s timeout
         process = subprocess.run(cmd_full, shell=True, cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
         output = clean_ansi(process.stdout + process.stderr)
         
-        if not output.strip(): output = "(Done)"
+        if not output.strip(): output = "✅ (Executed with no output)"
         
-        await update.message.reply_text(f"💻 **Output:**\n```\n{output[:4000]}```", parse_mode="Markdown")
+        if len(output) > 4000:
+            output = output[:4000] + "\n...[Output Truncated]"
+            
+        await update.message.reply_text(f"```\n{output}```", parse_mode="Markdown")
         
     except subprocess.TimeoutExpired:
-        await update.message.reply_text("⏱️ **Timeout:** Command took too long.")
+        await update.message.reply_text("⏱️ **Timeout:** Command took longer than 30s.")
     except Exception as e:
         await update.message.reply_text(f"⚠️ **Error:** `{str(e)}`")
 
+# --- FILE OPERATIONS ---
 async def pull_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user(update): return
     if not context.args:
-        await update.message.reply_text("❓ Usage: `/pull filename`")
+        await update.message.reply_text("usage: /pull <filename>")
         return
 
     filename = " ".join(context.args)
@@ -146,11 +145,12 @@ async def pull_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if os.path.isfile(path):
         try:
+            await update.message.reply_text("📤 Uploading...")
             await update.message.reply_document(document=open(path, 'rb'))
         except Exception as e:
-            await update.message.reply_text(f"❌ **Failed:** `{str(e)}` (Max 50MB)")
+            await update.message.reply_text(f"❌ Error: {e}")
     else:
-        await update.message.reply_text(f"❌ **Not found:** `{filename}`")
+        await update.message.reply_text("❌ File not found.")
 
 async def push_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user(update): return
@@ -158,15 +158,26 @@ async def push_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await context.bot.get_file(update.message.document.file_id)
     file_path = os.path.join(cwd, update.message.document.file_name)
     await file.download_to_drive(file_path)
-    await update.message.reply_text(f"📥 **Saved to:** `{file_path}`")
+    await update.message.reply_text(f"📥 **Saved:** `{file_path}`")
+
+async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user(update): return
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    await update.message.reply_text(
+        f"📊 **Stats**\nCPU: {cpu}%\nRAM: {ram.percent}%\nDisk: {disk.percent}%"
+    )
 
 if __name__ == '__main__':
+    print("🚀 TeLinux v2 Bot Starting...")
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("pull", pull_file))
     app.add_handler(MessageHandler(filters.Document.ALL, push_file))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_shell))
-    print("TeLinux Bot Started...")
+    
     app.run_polling()
